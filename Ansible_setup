@@ -1,1 +1,86 @@
+#!/bin/bash
+
+# Update the package list and install AWS CLI
+sudo yum update -y
+sudo yum install -y aws-cli
+
+# Define your AWS credentials and region (replace with your actual values)
+AWS_ACCESS_KEY_ID="access-key"
+AWS_SECRET_ACCESS_KEY="secret-access-key"
+AWS_DEFAULT_REGION="ap-south-1"
+AWS_OUTPUT_FORMAT="text"
+
+# Configure AWS CLI with provided credentials and region
+aws configure set aws_access_key_id $AWS_ACCESS_KEY_ID
+aws configure set aws_secret_access_key $AWS_SECRET_ACCESS_KEY
+aws configure set region $AWS_DEFAULT_REGION
+aws configure set output $AWS_OUTPUT_FORMAT
+
+# Verify AWS CLI configuration
+aws sts get-caller-identity
+
+echo "AWS CLI has been configured successfully."
+
+# Install Ansible
+sudo yum install ansible -y
+
+# Set up ssh key
+ssh-keygen -t rsa -b 2048 -f ~/.ssh/id_rsa -q -N ""
+aws ec2 import-key-pair --key-name "$SSH_KEY_NAME" --public-key-material file://$SSH_KEY_PATH.pub
+
+# Set up SSH keys
+SSH_KEY_NAME="id_rsa.pub"
+SSH_KEY_PATH="$HOME/.ssh/$SSH_KEY_NAME"
+
+# Ensure SSH key exists
+if [ ! -f "$SSH_KEY_PATH" ]; then
+    echo "SSH key file not found: $SSH_KEY_PATH"
+    exit 1
+fi
+
+# Prepare Ansible inventory file
+INVENTORY_FILE="hosts"
+echo "[all]" > $INVENTORY_FILE
+
+# Get the Private IP of the master EC2 instance
+MASTER_PRIVATE_IP=$(ifconfig enX0 | grep 'inet ' | awk '{print $2}')
+
+# Get the list of running instances' private IPs
+PRIVATE_IPS=$(aws ec2 describe-instances --query "Reservations[*].Instances[*].PrivateIpAddress" --output text)
+
+# Setup Keypairs in all instances excluding master
+for PRIVATE_IP in $PRIVATE_IPS; do
+  if [ "$PRIVATE_IP" != "$MASTER_PRIVATE_IP" ]; then
+    ssh-copy-id -i "$HOME/.ssh/id_rsa.pub" ec2-user@$PRIVATE_IP
+  fi
+done
+
+# Loop through each private IP and add to the inventory file if it's not the master IP
+for PRIVATE_IP in $PRIVATE_IPS; do
+  if [ "$PRIVATE_IP" != "$MASTER_PRIVATE_IP" ]; then
+    echo "$PRIVATE_IP" >> $INVENTORY_FILE
+  fi
+done
+
+# Set up Ansible configuration
+ANSIBLE_CFG_FILE="ansible.cfg"
+cat <<EOL > $ANSIBLE_CFG_FILE
+[defaults]
+inventory = $INVENTORY_FILE
+remote_user = ec2-user
+private_key_file = $HOME/.ssh/id_rsa
+host_key_checking = False
+EOL
+
+echo "Ansible master has been set up successfully with the following inventory:"
+cat $INVENTORY_FILE
+
+# Test SSH connection manually
+echo "Testing SSH connection manually..."
+for PRIVATE_IP in $PRIVATE_IPS; do
+   if [ "$PRIVATE_IP" != "$MASTER_PRIVATE_IP" ]; then
+      ssh -o StrictHostKeyChecking=no -i "$HOME/.ssh/id_rsa" ec2-user@$PRIVATE_IP 'echo SSH connection successful'
+   fi  
+done
+
 
